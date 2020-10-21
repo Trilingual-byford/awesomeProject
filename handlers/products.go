@@ -2,7 +2,9 @@ package handlers
 
 import (
 	"awesomeProject/data"
+	"context"
 	"encoding/json"
+	"github.com/gorilla/mux"
 	"log"
 	"net/http"
 )
@@ -14,38 +16,52 @@ type Products struct {
 func NewProducts(l *log.Logger) *Products {
 	return &Products{l}
 }
-func (p *Products) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
-		p.getProducts(w, r)
-		return
-	}
-	if r.Method == http.MethodPost {
-		p.addProduct(w, r)
-		return
-	}
-	//catch All if no method is satisfied return an error
-	w.WriteHeader(http.StatusMethodNotAllowed)
-	w.Write([]byte("Oops" + r.Method))
-}
-func (p *Products) getProducts(w http.ResponseWriter, r *http.Request) {
+func (p *Products) GetProducts(rw http.ResponseWriter, r *http.Request) {
 	products := data.GetProducts()
 	marshal, err := json.Marshal(products)
 	if err != nil {
-		http.Error(w, "Unable to marshal json", http.StatusInternalServerError)
+		http.Error(rw, "Unable to marshal json", http.StatusInternalServerError)
 		return
 	}
-	w.Write(marshal)
+	rw.Write(marshal)
 }
-func (p *Products) addProduct(w http.ResponseWriter, r *http.Request) {
+func (p *Products) AddProduct(w http.ResponseWriter, r *http.Request) {
 	p.l.Println("Handle Post Product")
-	product := &data.Product{}
-	err := product.GetFromJson(r.Body)
+	value := r.Context().Value(KeyProduct{}).(data.Product)
+	data.AddProduct(&value)
+	jsonProduct, err := value.MarshToJson()
 	if err != nil {
-		http.Error(w, "Unable to unmarshall json", http.StatusBadRequest)
 		return
 	}
-	addedProduct := data.AddProduct(product)
-	toJson, err := addedProduct.MarshToJson()
-	w.Write(toJson)
-	p.l.Println("Prod:%#v", product)
+	w.Write(jsonProduct)
+	p.l.Println("Prod:%#v", value)
+}
+func (p *Products) UpdateProduct(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	p.l.Println("This is the Vars Id:", vars)
+
+}
+
+type KeyProduct struct{}
+
+func (p Products) MiddleWareValidateProduct(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		product := data.Product{}
+		err := product.GetFromJson(request.Body)
+		if err != nil {
+			p.l.Println("[Error] deserializing product", err)
+			http.Error(writer, "Error Reading product", http.StatusBadRequest)
+			return
+		}
+		ctx := context.WithValue(request.Context(), KeyProduct{}, product)
+		validateErr := product.Validate()
+		if validateErr != nil {
+			http.Error(writer, "Validate error happened", http.StatusBadRequest)
+			return
+		}
+		requestCtx := request.WithContext(ctx)
+		//Call the next handler,which can be anther middleware in the chain,or the final handler
+		next.ServeHTTP(writer, requestCtx)
+	})
+
 }
